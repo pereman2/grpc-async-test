@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package grpcmgr;
+
+service MgrApi {
+  rpc var(event) returns (event) {}
+  rpc foo(Empty) returns (event) {}
+}
+
+message Empty {
+}
+
+message event {
+  string id = 1;
+}
