@@ -3,6 +3,7 @@
 #include <google/protobuf/any.h>
 #include <grpc++/grpc++.h>
 #include <grpc/grpc.h>
+#include <thread>
 
 using namespace std;
 
@@ -57,7 +58,14 @@ public:
     std::cout << "Server listening on " << server_address << std::endl;
 
     // Proceed to the server's main loop.
-    HandleRpcs();
+    std::thread t1(&ServerImpl::HandleRpcs, this);
+    std::thread t2(&ServerImpl::HandleRpcs, this);
+    std::thread t3(&ServerImpl::HandleRpcs, this);
+    std::thread t4(&ServerImpl::HandleRpcs, this);
+    t1.join();
+    t2.join();
+    t3.join();
+    t4.join();
   }
 
 private:
@@ -89,7 +97,6 @@ private:
         // Make this instance progress to the PROCESS state.
         status_ = PROCESS;
 
-        std::cout << "CREATE " << std::endl;
         // As part of the initial CREATE state, we *request* that the system
         // start processing SayHello requests. In this request, "this" acts are
         // the tag uniquely identifying the request (so that different CallData
@@ -97,7 +104,6 @@ private:
         // the memory address of this CallData instance.
         serviceFunc(&ctx_, &request_, &responder_, cq_, cq_, this);
       } else if (status_ == PROCESS) {
-        std::cout << "PROCESS " << std::endl;
         // Spawn a new CallData instance to serve new clients while we process
         // the one for this CallData. The instance will deallocate itself as
         // part of its FINISH state.
@@ -160,8 +166,6 @@ private:
                     grpcmgr::event, MgrApiService::var);
     SETUP_CALL_DATA(grpcmgr::MgrApi::AsyncService::Requestfoo, grpcmgr::Empty,
                     grpcmgr::event, MgrApiService::foo);
-    // new CallData<grpcmgr::event, grpcmgr::event>(&service_, cq_.get(),
-    //                                              service_handler);
     void *tag; // uniquely identifies a request.
     bool ok;
     while (true) {
@@ -170,7 +174,6 @@ private:
       // memory address of a CallData instance.
       // The return value of Next should always be checked. This return value
       // tells us whether there is any kind of event or cq_ is shutting down.
-      std::cout << "waiting next" << std::endl;
       GPR_ASSERT(cq_->Next(&tag, &ok));
       GPR_ASSERT(ok);
       static_cast<CallDataInterface *>(tag)->proceed();

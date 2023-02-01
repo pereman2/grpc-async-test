@@ -22,11 +22,23 @@ def var(stub):
     event.id = "xd"
     response = stub.var(event)
 
-
+def foot(stub, timespt):
+    for _ in range(timespt):
+        foo(stub)
 import time
+import threading 
+nthreads = 10
+times = 100000
+timespt = int(times/nthreads)
+threads = []
+for _ in range(nthreads):
+    threads.append(threading.Thread(target=foot, args=(stub,timespt,)))
+
 t1 = time.time()
-for i in range(10000):
-    foo(stub)
-    var(stub)
+for t in threads:
+    t.start()
+
+for t in threads:
+    t.join()
 
 print(f'time is {time.time() - t1} s')
