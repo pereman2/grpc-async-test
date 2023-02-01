@@ -1,5 +1,8 @@
 
 import mes_pb2_grpc
+import time
+import threading 
+import sys
 import mes_pb2
 import grpc
 from threading import Thread
@@ -10,7 +13,7 @@ def wrap(func):
         return func(*args, **kwargs, metadata=[('xd', 's')])
     return wr
 
-channel = grpc.insecure_channel('localhost:50051')
+channel = grpc.insecure_channel('unix:/tmp/xd.sock')
 stub = mes_pb2_grpc.MgrApiStub(channel)
 
 def foo(stub):
@@ -25,9 +28,8 @@ def var(stub):
 def foot(stub, timespt):
     for _ in range(timespt):
         foo(stub)
-import time
-import threading 
-nthreads = 10
+
+nthreads = 8
 times = 100000
 timespt = int(times/nthreads)
 threads = []

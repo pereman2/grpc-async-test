@@ -41,7 +41,7 @@ public:
 
   // There is no shutdown handling in this code.
   void Run() {
-    std::string server_address("0.0.0.0:50051");
+    std::string server_address("unix:/tmp/xd.sock");
 
     grpc::ServerBuilder builder;
     service_handler = new MgrApiService();
@@ -50,22 +50,26 @@ public:
     // Register "service_" as the instance through which we'll communicate with
     // clients. In this case it corresponds to an *asynchronous* service.
     builder.RegisterService(&service_);
-    // Get hold of the completion queue used for the asynchronous communication
-    // with the gRPC runtime.
-    cq_ = builder.AddCompletionQueue();
     // Finally assemble the server.
-    server_ = builder.BuildAndStart();
     std::cout << "Server listening on " << server_address << std::endl;
 
     // Proceed to the server's main loop.
-    std::thread t1(&ServerImpl::HandleRpcs, this);
-    std::thread t2(&ServerImpl::HandleRpcs, this);
-    std::thread t3(&ServerImpl::HandleRpcs, this);
-    std::thread t4(&ServerImpl::HandleRpcs, this);
-    t1.join();
-    t2.join();
-    t3.join();
-    t4.join();
+    auto nthreads = std::atoi(getenv("TEST_G_THREADS"));
+    std::cout << "Running with " << nthreads << " threads" << std::endl;
+    auto nqueues = std::atoi(getenv("TEST_G_QUEUE"));
+    std::cout << "Running with " << nqueues << " queues" << std::endl;
+    std::vector<std::thread> threads;
+    for (int i = 0; i < nqueues; i++) {
+      srv_cqs_.push_back(builder.AddCompletionQueue((i % 2) == 0));
+    }
+    server_ = builder.BuildAndStart();
+    for (int i = 0; i < nthreads; i++) {
+      std::thread t1(&ServerImpl::HandleRpcs, this, i % nqueues);
+      threads.push_back(std::move(t1));
+    }
+    for (int i = 0; i < nthreads; i++) {
+      threads[i].join();
+    }
   }
 
 private:
@@ -87,7 +91,7 @@ private:
     // with the gRPC runtime.
     CallData(service_func_t service_func, grpcmgr::MgrApi::AsyncService *service,
              grpc::ServerCompletionQueue *cq, MgrApiService *service_handler, callback_func_t cf)
-        : service_(service), cq_(cq), responder_(&ctx_), status_(CREATE), callback(cf), serviceFunc(service_func) {
+        : service_(service), cq_(cq), ctx_(new grpc::ServerContext), responder_(ctx_.get()), status_(CREATE), callback(cf), serviceFunc(service_func) {
       // Invoke the serving logic right away.
       proceed();
     }
@@ -102,13 +106,12 @@ private:
         // the tag uniquely identifying the request (so that different CallData
         // instances can serve different requests concurrently), in this case
         // the memory address of this CallData instance.
-        serviceFunc(&ctx_, &request_, &responder_, cq_, cq_, this);
+        serviceFunc(ctx_.get(), &request_, &responder_, cq_, cq_, this);
       } else if (status_ == PROCESS) {
         // Spawn a new CallData instance to serve new clients while we process
         // the one for this CallData. The instance will deallocate itself as
         // part of its FINISH state.
-        new CallData(serviceFunc, service_, cq_, service_handler, callback);
-        callback(&ctx_, &request_, &reply_);
+        callback(ctx_.get(), &request_, &reply_);
 
         // And we are done! Let the gRPC runtime know we've finished, using the
         // memory address of this instance as the uniquely identifying tag for
@@ -118,7 +121,10 @@ private:
       } else {
         GPR_ASSERT(status_ == FINISH);
         // Once in the FINISH state, deallocate ourselves (CallData).
-        delete this;
+        status_ = CREATE;
+        ctx_.reset(new grpc::ServerContext);
+        responder_ = grpc::ServerAsyncResponseWriter<ResponseType>(ctx_.get());
+        proceed();
       }
     }
 
@@ -132,7 +138,7 @@ private:
     // Context for the rpc, allowing to tweak aspects of it such as the use
     // of compression, authentication, as well as to send metadata back to the
     // client.
-    grpc::ServerContext ctx_;
+    std::unique_ptr<grpc::ServerContext> ctx_;
 
     // What we get from the client.
     RequestType request_;
@@ -142,7 +148,7 @@ private:
     callback_func_t callback;
 
     // The means to get back to the client.
-    grpc::ServerAsyncResponseWriter<grpcmgr::event> responder_;
+    grpc::ServerAsyncResponseWriter<ResponseType> responder_;
 
     // Let's implement a tiny state machine with the following states.
     enum CallStatus { CREATE, PROCESS, FINISH };
@@ -150,22 +156,26 @@ private:
   };
 
   // This can be run in multiple threads if needed.
-  void HandleRpcs() {
+  void HandleRpcs(int rank) {
 #define SETUP_CALL_DATA(SERVICE, REQ, RES, CALLBACK_FUNC)                      \
   new CallData<REQ, RES>(                                                      \
       std::bind(&SERVICE, &service_, std::placeholders::_1,                    \
                 std::placeholders::_2, std::placeholders::_3,                  \
                 std::placeholders::_4, std::placeholders::_5,                  \
                 std::placeholders::_6),                                        \
-      &service_, cq_.get(), service_handler,                                              \
+      &service_, srv_cqs_[rank].get(), service_handler,                                              \
       std::bind(&CALLBACK_FUNC, service_handler, std::placeholders::_1,        \
                 std::placeholders::_2, std::placeholders::_3))
 
     // Spawn a new CallData instance to serve new clients.
     SETUP_CALL_DATA(grpcmgr::MgrApi::AsyncService::Requestvar, grpcmgr::event,
                     grpcmgr::event, MgrApiService::var);
-    SETUP_CALL_DATA(grpcmgr::MgrApi::AsyncService::Requestfoo, grpcmgr::Empty,
-                    grpcmgr::event, MgrApiService::foo);
+    auto ncalldata = std::atoi(std::getenv("TEST_G_CD"));
+    std::cout << "Setting up " << ncalldata << " calldata contexts for queue" << std::endl;
+    for (int i = 0; i < ncalldata; i++ ) {
+      SETUP_CALL_DATA(grpcmgr::MgrApi::AsyncService::Requestfoo, grpcmgr::Empty,
+          grpcmgr::event, MgrApiService::foo);
+    }
     void *tag; // uniquely identifies a request.
     bool ok;
     while (true) {
@@ -173,8 +183,8 @@ private:
       // event is uniquely identified by its tag, which in this case is the
       // memory address of a CallData instance.
       // The return value of Next should always be checked. This return value
-      // tells us whether there is any kind of event or cq_ is shutting down.
-      GPR_ASSERT(cq_->Next(&tag, &ok));
+      // tells us whether there is any kind of event or queue is shutting down.
+      GPR_ASSERT(srv_cqs_[rank]->Next(&tag, &ok));
       GPR_ASSERT(ok);
       static_cast<CallDataInterface *>(tag)->proceed();
     }
@@ -183,6 +193,7 @@ private:
   std::unique_ptr<grpc::ServerCompletionQueue> cq_;
   grpcmgr::MgrApi::AsyncService service_;
   std::unique_ptr<grpc::Server> server_;
+  std::vector<std::unique_ptr<grpc::ServerCompletionQueue>> srv_cqs_;
   MgrApiService *service_handler;
 };
 
