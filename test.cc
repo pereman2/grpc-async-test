@@ -33,7 +33,9 @@ public:
 
 class ServerImpl final {
 public:
-  ServerImpl() : nworkers(std::thread::hardware_concurrency()) {}
+  ServerImpl(unsigned int nworkers, unsigned int nqueues = 1)
+      : nworkers(std::min(nworkers, std::thread::hardware_concurrency())),
+        nqueues(nqueues) {}
   ~ServerImpl() {
     server_->Shutdown();
     // Always shutdown the completion queue after the server.
@@ -64,10 +66,6 @@ public:
     std::cout << "Server listening on " << server_address << std::endl;
 
     // Proceed to the server's main loop.
-    nworkers = std::atoi(getenv("TEST_G_THREADS"));
-    std::cout << "Running with " << nworkers << " threads" << std::endl;
-    auto nqueues = std::atoi(getenv("TEST_G_QUEUE"));
-    std::cout << "Running with " << nqueues << " queues" << std::endl;
     for (int i = 0; i < nqueues; i++) {
       srv_cqs_.push_back(builder.AddCompletionQueue((i % 2) == 0));
     }
@@ -186,7 +184,6 @@ private:
       &service_, srv_cqs_[rank].get(), service_handler,                        \
       std::bind(&CALLBACK_FUNC, service_handler, std::placeholders::_1,        \
                 std::placeholders::_2, std::placeholders::_3));
-
     // Spawn a new CallData instance to serve new clients.
     auto ncalldata = std::atoi(std::getenv("TEST_G_CD"));
     std::cout << "Setting up " << ncalldata << " calldata contexts for queue"
@@ -196,11 +193,11 @@ private:
       auto ctx1 =
           SETUP_CALL_DATA(grpcmgr::MgrApi::AsyncService::Requestfoo,
                           grpcmgr::Empty, grpcmgr::event, MgrApiService::foo);
-      contexts.push_back((void*) ctx1);
+      contexts.push_back((void *)ctx1);
       auto ctx =
           SETUP_CALL_DATA(grpcmgr::MgrApi::AsyncService::Requestvar,
                           grpcmgr::event, grpcmgr::event, MgrApiService::var);
-      contexts.push_back((void*) ctx);
+      contexts.push_back((void *)ctx);
     }
     contexts_mu.unlock();
     void *tag; // uniquely identifies a request.
@@ -215,19 +212,33 @@ private:
       GPR_ASSERT(ok);
       static_cast<CallDataInterface *>(tag)->proceed();
     }
+
+  }
+
+public:
+  void wait() {
+    for (auto &thread : threads) {
+      thread.join();
+    }
   }
 
   grpcmgr::MgrApi::AsyncService service_;
   std::unique_ptr<grpc::Server> server_;
   std::vector<std::unique_ptr<grpc::ServerCompletionQueue>> srv_cqs_;
   std::mutex contexts_mu;
-  std::vector<void*> contexts;
+  std::vector<void *> contexts;
   unsigned int nworkers;
+  unsigned int nqueues;
   std::vector<std::thread> threads;
   MgrApiService *service_handler;
 };
 
 int main() {
-  ServerImpl server;
+  auto nworkers = std::atoi(getenv("TEST_G_THREADS"));
+  std::cout << "Running with " << nworkers << " threads" << std::endl;
+  auto nqueues = std::atoi(getenv("TEST_G_QUEUE"));
+  std::cout << "Running with " << nqueues << " queues" << std::endl;
+  ServerImpl server(nworkers, nqueues);
   server.Run();
+  server.wait();
 }
