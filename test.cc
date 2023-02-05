@@ -44,6 +44,9 @@ public:
       free(context);
     }
     contexts.clear();
+    for (int i = 0; i < nworkers; i++) {
+      threads[i].join();
+    }
   }
 
   // There is no shutdown handling in this code.
@@ -76,9 +79,6 @@ public:
     for (int i = 0; i < nworkers; i++) {
       std::thread t1(&ServerImpl::HandleRpcs, this, i % nqueues);
       threads.push_back(std::move(t1));
-    }
-    for (int i = 0; i < nworkers; i++) {
-      threads[i].join();
     }
   }
 
