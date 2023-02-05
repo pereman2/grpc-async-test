@@ -175,13 +175,13 @@ private:
 
   // This can be run in multiple threads if needed.
   void HandleRpcs(int rank) {
-#define SETUP_CALL_DATA(SERVICE, REQ, RES, CALLBACK_FUNC)                      \
-  new CallData<REQ, RES>(                                                      \
-      std::bind(&SERVICE, &service_, std::placeholders::_1,                    \
+#define SETUP_CALL_DATA(async_service, request_method, RequestType, ResponseType, CALLBACK_FUNC, cq)                      \
+  new CallData<RequestType, ResponseType>(                                                      \
+      std::bind(&request_method, &async_service, std::placeholders::_1,                    \
                 std::placeholders::_2, std::placeholders::_3,                  \
                 std::placeholders::_4, std::placeholders::_5,                  \
                 std::placeholders::_6),                                        \
-      &service_, srv_cqs_[rank].get(), service_handler,                        \
+      &async_service, cq, service_handler,                        \
       std::bind(&CALLBACK_FUNC, service_handler, std::placeholders::_1,        \
                 std::placeholders::_2, std::placeholders::_3));
     // Spawn a new CallData instance to serve new clients.
@@ -191,12 +191,12 @@ private:
     contexts_mu.lock();
     for (int i = 0; i < ncalldata; i++) {
       auto ctx1 =
-          SETUP_CALL_DATA(grpcmgr::MgrApi::AsyncService::Requestfoo,
-                          grpcmgr::Empty, grpcmgr::event, MgrApiService::foo);
+          SETUP_CALL_DATA(service_, grpcmgr::MgrApi::AsyncService::Requestfoo,
+                          grpcmgr::Empty, grpcmgr::event, MgrApiService::foo, srv_cqs_[rank].get());
       contexts.push_back((void *)ctx1);
       auto ctx =
-          SETUP_CALL_DATA(grpcmgr::MgrApi::AsyncService::Requestvar,
-                          grpcmgr::event, grpcmgr::event, MgrApiService::var);
+          SETUP_CALL_DATA(service_, grpcmgr::MgrApi::AsyncService::Requestvar,
+                          grpcmgr::event, grpcmgr::event, MgrApiService::var, srv_cqs_[rank].get());
       contexts.push_back((void *)ctx);
     }
     contexts_mu.unlock();
